@@ -127,18 +127,21 @@ print_summary() {
 # =============================================================================
 run_sourcetable_tests() {
     echo -e "\n${BLUE}=== SOURCETABLE TESTS ===${NC}"
-    
+
     # RTK2go - Large public caster
     run_test "RTK2go sourcetable" "$SOURCETABLE" rtk2go.com 2101
-    
+
     # EUREF - European reference stations
     run_test "EUREF sourcetable" "$SOURCETABLE" euref-ip.net 2101
-    
+
     # Centipede - French open community
     run_test "Centipede sourcetable" "$SOURCETABLE" caster.centipede.fr 2101
-    
+
     # IGS - International GNSS Service
     run_test "IGS sourcetable" "$SOURCETABLE" igs-ip.net 2101
+
+    # SNIP Demo Caster - Good for protocol testing
+    run_test "SNIP Demo sourcetable" "$SOURCETABLE" ntrip.use-snip.com 2101
 }
 
 # =============================================================================

@@ -61,6 +61,10 @@ pub enum Error {
     /// Failed to parse sourcetable.
     #[error("Failed to parse sourcetable: {message}")]
     SourcetableParseError { message: String },
+
+    /// Proxy connection or tunnel establishment failed.
+    #[error("Proxy error: {message}")]
+    ProxyError { message: String },
 }
 
 impl Error {

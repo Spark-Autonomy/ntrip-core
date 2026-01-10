@@ -12,6 +12,7 @@
 //! - **Protocol Support**: NTRIP v1 (ICY) and v2 (HTTP/1.1 chunked)
 //! - **Security**: TLS/HTTPS via rustls (no OpenSSL dependency)
 //! - **Discovery**: Sourcetable retrieval and nearest mountpoint selection
+//! - **Proxy**: HTTP proxy support via CONNECT tunneling
 //! - **Async**: Built on Tokio for efficient async I/O
 //! - **Robust**: Read timeouts, automatic reconnection, and proper error handling
 //!
@@ -32,6 +33,86 @@
 //! # use ntrip_core::NtripConfig;
 //! let config = NtripConfig::new("secure-caster.example.com", 443, "MOUNT")
 //!     .with_tls();  // Enable TLS for this connection
+//! ```
+//!
+//! ## HTTP Proxy Support
+//!
+//! Connect through an HTTP proxy using the CONNECT method:
+//!
+//! ```rust,no_run
+//! use ntrip_core::{NtripConfig, ProxyConfig};
+//!
+//! // Explicit proxy configuration
+//! let proxy = ProxyConfig::new("proxy.example.com", 8080)
+//!     .with_credentials("proxy_user", "proxy_pass");
+//!
+//! let config = NtripConfig::new("caster.example.com", 2101, "MOUNT")
+//!     .with_proxy(proxy);
+//!
+//! // Or read from $HTTP_PROXY environment variable
+//! let config = NtripConfig::new("caster.example.com", 2101, "MOUNT")
+//!     .with_proxy_from_env();
+//! ```
+//!
+//! ## Cancellation
+//!
+//! To cancel a pending operation, use `tokio::select!`:
+//!
+//! ```rust,no_run
+//! use ntrip_core::{NtripClient, NtripConfig};
+//! use tokio::sync::oneshot;
+//!
+//! # async fn example() -> Result<(), ntrip_core::Error> {
+//! let config = NtripConfig::new("rtk2go.com", 2101, "MOUNT");
+//! let mut client = NtripClient::new(config)?;
+//! client.connect().await?;
+//!
+//! let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+//!
+//! let mut buf = [0u8; 4096];
+//! tokio::select! {
+//!     result = client.read_chunk(&mut buf) => {
+//!         match result {
+//!             Ok(n) => println!("Received {} bytes", n),
+//!             Err(e) => eprintln!("Error: {}", e),
+//!         }
+//!     }
+//!     _ = cancel_rx => {
+//!         println!("Operation cancelled");
+//!         client.disconnect();
+//!     }
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Custom Timeout Handling
+//!
+//! For fine-grained timeout control beyond the built-in read timeout:
+//!
+//! ```rust,no_run
+//! use ntrip_core::{NtripClient, NtripConfig};
+//! use std::time::Duration;
+//!
+//! # async fn example() -> Result<(), ntrip_core::Error> {
+//! // Disable built-in reconnection for manual control
+//! let config = NtripConfig::new("rtk2go.com", 2101, "MOUNT")
+//!     .with_read_timeout(0)  // Disable built-in read timeout
+//!     .without_reconnect();  // Disable auto-reconnection
+//!
+//! let mut client = NtripClient::new(config)?;
+//! client.connect().await?;
+//!
+//! let mut buf = [0u8; 4096];
+//!
+//! // Apply your own timeout
+//! match tokio::time::timeout(Duration::from_secs(5), client.read_chunk(&mut buf)).await {
+//!     Ok(Ok(n)) => println!("Received {} bytes", n),
+//!     Ok(Err(e)) => eprintln!("Read error: {}", e),
+//!     Err(_) => eprintln!("Custom timeout expired"),
+//! }
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Quick Start
@@ -80,7 +161,7 @@ mod stream;
 
 // Re-export public API
 pub use client::NtripClient;
-pub use config::{ConnectionConfig, NtripConfig, NtripVersion};
+pub use config::{ConnectionConfig, NtripConfig, NtripVersion, ProxyConfig};
 pub use error::Error;
 pub use gga::GgaSentence;
 pub use sourcetable::{CasterEntry, NetworkEntry, Sourcetable, StreamEntry};

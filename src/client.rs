@@ -10,16 +10,17 @@
 //! - Auto-detection of protocol version from server response
 //! - Basic Authentication
 //! - TLS/HTTPS support for secure connections
+//! - HTTP proxy support via CONNECT tunneling
 //! - GGA position reporting
 
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
-use crate::config::{NtripConfig, NtripVersion};
+use crate::config::{NtripConfig, NtripVersion, ProxyConfig};
 use crate::gga::GgaSentence;
 use crate::sourcetable::Sourcetable;
 use crate::stream::NtripStream;
@@ -79,6 +80,130 @@ impl NtripClient {
         self.connect_with_gga(None).await
     }
 
+    /// Establish a TCP connection, optionally through an HTTP proxy.
+    ///
+    /// If a proxy is configured, this connects to the proxy and uses HTTP CONNECT
+    /// to establish a tunnel to the target host:port.
+    async fn establish_tcp_connection(
+        target_host: &str,
+        target_port: u16,
+        proxy: Option<&ProxyConfig>,
+        timeout_secs: u32,
+    ) -> Result<TcpStream, Error> {
+        let timeout = Duration::from_secs(timeout_secs as u64);
+
+        match proxy {
+            Some(proxy_config) => {
+                let proxy_addr = format!("{}:{}", proxy_config.host, proxy_config.port);
+                info!(
+                    proxy = %proxy_addr,
+                    target = %format!("{}:{}", target_host, target_port),
+                    "Connecting via HTTP proxy"
+                );
+
+                // Connect to proxy
+                let mut stream =
+                    match tokio::time::timeout(timeout, TcpStream::connect(&proxy_addr)).await {
+                        Ok(Ok(s)) => s,
+                        Ok(Err(e)) => {
+                            return Err(Error::ProxyError {
+                                message: format!(
+                                    "Failed to connect to proxy {}:{}: {}",
+                                    proxy_config.host, proxy_config.port, e
+                                ),
+                            })
+                        }
+                        Err(_) => return Err(Error::Timeout { timeout_secs }),
+                    };
+
+                // Build HTTP CONNECT request
+                let mut connect_request = format!(
+                    "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n",
+                    target_host, target_port, target_host, target_port
+                );
+
+                // Add proxy authentication if configured
+                if let (Some(user), Some(pass)) = (&proxy_config.username, &proxy_config.password) {
+                    let credentials = format!("{}:{}", user, pass);
+                    let encoded = BASE64.encode(credentials);
+                    connect_request
+                        .push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
+                }
+
+                connect_request.push_str("\r\n");
+
+                debug!("Sending HTTP CONNECT request to proxy");
+
+                // Send CONNECT request
+                stream
+                    .write_all(connect_request.as_bytes())
+                    .await
+                    .map_err(|e| Error::ProxyError {
+                        message: format!("Failed to send CONNECT request: {}", e),
+                    })?;
+
+                // Read response (first line should be "HTTP/1.x 200 ...")
+                let mut reader = BufReader::new(&mut stream);
+                let mut response_line = String::new();
+
+                match tokio::time::timeout(timeout, reader.read_line(&mut response_line)).await {
+                    Ok(Ok(0)) => {
+                        return Err(Error::ProxyError {
+                            message: "Proxy closed connection without response".to_string(),
+                        })
+                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        return Err(Error::ProxyError {
+                            message: format!("Failed to read proxy response: {}", e),
+                        })
+                    }
+                    Err(_) => return Err(Error::Timeout { timeout_secs }),
+                }
+
+                // Check for 200 response
+                if !response_line.contains("200") {
+                    return Err(Error::ProxyError {
+                        message: format!("Proxy CONNECT failed: {}", response_line.trim()),
+                    });
+                }
+
+                debug!(response = %response_line.trim(), "Proxy tunnel established");
+
+                // Consume remaining headers until empty line
+                loop {
+                    let mut header_line = String::new();
+                    match tokio::time::timeout(timeout, reader.read_line(&mut header_line)).await {
+                        Ok(Ok(0)) => break,
+                        Ok(Ok(_)) => {
+                            if header_line.trim().is_empty() {
+                                break;
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            return Err(Error::ProxyError {
+                                message: format!("Failed to read proxy headers: {}", e),
+                            })
+                        }
+                        Err(_) => return Err(Error::Timeout { timeout_secs }),
+                    }
+                }
+
+                info!("HTTP proxy tunnel established successfully");
+                Ok(stream)
+            }
+            None => {
+                // Direct connection (no proxy)
+                let addr = format!("{}:{}", target_host, target_port);
+                match tokio::time::timeout(timeout, TcpStream::connect(&addr)).await {
+                    Ok(Ok(s)) => Ok(s),
+                    Ok(Err(e)) => Err(Error::connection_failed(target_host, target_port, e)),
+                    Err(_) => Err(Error::Timeout { timeout_secs }),
+                }
+            }
+        }
+    }
+
     /// Connect to the NTRIP caster with an optional initial GGA position.
     ///
     /// For NTRIP v2, the GGA sentence is sent in the `Ntrip-GGA` header,
@@ -96,21 +221,14 @@ impl NtripClient {
 
         info!(addr = %addr, "Connecting to NTRIP caster");
 
-        // 1. Establish TCP connection
-        let tcp_stream = match tokio::time::timeout(
-            Duration::from_secs(self.config.connection.timeout_secs as u64),
-            TcpStream::connect(&addr),
+        // 1. Establish TCP connection (directly or via proxy)
+        let tcp_stream = Self::establish_tcp_connection(
+            host,
+            port,
+            self.config.proxy.as_ref(),
+            self.config.connection.timeout_secs,
         )
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(Error::connection_failed(host, port, e)),
-            Err(_) => {
-                return Err(Error::Timeout {
-                    timeout_secs: self.config.connection.timeout_secs,
-                })
-            }
-        };
+        .await?;
 
         // 2. Optionally upgrade to TLS
         let mut stream: NtripStream = if self.config.use_tls {
@@ -488,21 +606,14 @@ impl NtripClient {
 
         info!(addr = %addr, "Fetching sourcetable from NTRIP caster");
 
-        // 1. Establish TCP connection
-        let tcp_stream = match tokio::time::timeout(
-            Duration::from_secs(config.connection.timeout_secs as u64),
-            TcpStream::connect(&addr),
+        // 1. Establish TCP connection (directly or via proxy)
+        let tcp_stream = Self::establish_tcp_connection(
+            host,
+            port,
+            config.proxy.as_ref(),
+            config.connection.timeout_secs,
         )
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(Error::connection_failed(host, port, e)),
-            Err(_) => {
-                return Err(Error::Timeout {
-                    timeout_secs: config.connection.timeout_secs,
-                })
-            }
-        };
+        .await?;
 
         // 2. Optionally upgrade to TLS
         let mut stream: NtripStream = if config.use_tls {

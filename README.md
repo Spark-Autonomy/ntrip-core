@@ -1,5 +1,11 @@
 # ntrip-core
 
+[![Crates.io](https://img.shields.io/crates/v/ntrip-core.svg)](https://crates.io/crates/ntrip-core)
+[![Documentation](https://docs.rs/ntrip-core/badge.svg)](https://docs.rs/ntrip-core)
+[![CI](https://github.com/greenforge-labs/ntrip-core/workflows/CI/badge.svg)](https://github.com/greenforge-labs/ntrip-core/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.75-blue.svg)](https://www.rust-lang.org)
+
 An async NTRIP client library for Rust.
 
 ## Features
@@ -9,6 +15,20 @@ An async NTRIP client library for Rust.
 - **Discovery**: Sourcetable retrieval and nearest mountpoint selection
 - **Async**: Built on Tokio for efficient async I/O
 - **Robust**: Read timeouts, automatic reconnection (configurable), proper error handling
+- **Proxy**: HTTP proxy support via CONNECT tunneling
+
+See the [API documentation](https://docs.rs/ntrip-core) for complete usage details.
+
+## Why ntrip-core?
+
+- **No OpenSSL dependency** - TLS via rustls simplifies cross-compilation and deployment
+- **Async-native** - Built on Tokio from the ground up, not blocking wrappers
+- **Complete protocol support** - Both NTRIP v1 and v2 with automatic version detection
+- **Sourcetable discovery** - Parse sourcetables and find nearest mountpoint by coordinates
+- **HTTP proxy support** - CONNECT tunneling with optional proxy authentication
+- **Cancellation-safe** - Works naturally with `tokio::select!` for timeouts and shutdown
+- **GGA position reporting** - Both in-stream and v2 header methods supported
+- **Automatic reconnection** - Configurable retry with GGA state preservation
 
 ## Quick Start
 
@@ -62,6 +82,25 @@ let config = NtripConfig::new("secure-caster.example.com", 443, "MOUNT")
 
 By default, connections use plain TCP. Call `.with_tls()` to enable TLS.
 
+## HTTP Proxy
+
+Connect through an HTTP proxy using the CONNECT method:
+
+```rust
+use ntrip_core::{NtripConfig, ProxyConfig};
+
+// Explicit proxy configuration
+let proxy = ProxyConfig::new("proxy.example.com", 8080)
+    .with_credentials("proxy_user", "proxy_pass");
+
+let config = NtripConfig::new("caster.example.com", 2101, "MOUNT")
+    .with_proxy(proxy);
+
+// Or read from $HTTP_PROXY environment variable
+let config = NtripConfig::new("caster.example.com", 2101, "MOUNT")
+    .with_proxy_from_env();
+```
+
 ## Sourcetable Discovery
 
 ```rust
@@ -95,13 +134,42 @@ cargo run --example connect -- rtk2go.com Laguna01 2101 --user=you@example.com -
 # Run unit tests
 cargo test
 
-# Run comprehensive test suite against real casters
-bash ./scripts/test_suite.sh --quick   # Sourcetable only
-bash ./scripts/test_suite.sh --full    # + nearest mountpoint tests
-bash ./scripts/test_suite.sh --connect # + connection tests (requires credentials)
+# Run integration tests against real public casters (no credentials needed)
+just test-integration
+# or: cargo test --test integration -- --ignored
+
+# Run shell-based test suite against real casters
+just test-suite          # Sourcetable only
+just test-suite-full     # + nearest mountpoint tests
+just test-suite-connect  # + connection tests (requires credentials)
 ```
 
-For connection tests, copy `scripts/credentials.env.template` to `scripts/credentials.env` and fill in your credentials.
+The integration tests fetch sourcetables from all public casters listed below, and include dynamic connection tests that find active mountpoints and stream real RTCM data from RTK2go and Centipede - no private credentials required.
+
+For the shell-based connection tests, copy `scripts/credentials.env.template` to `scripts/credentials.env` and fill in your credentials.
+
+## Logging
+
+This crate uses [`tracing`](https://docs.rs/tracing) for structured logging. Enable with a subscriber:
+
+```rust
+tracing_subscriber::fmt::init();
+```
+
+## Tested Casters
+
+This library is regularly tested against these public NTRIP casters:
+
+| Caster | Host | Auth | Notes |
+|--------|------|------|-------|
+| **RTK2go** | rtk2go.com:2101 | Email/none | Large public caster, 1000+ streams |
+| **Centipede** | caster.centipede.fr:2101 | None | Open French/EU RTK network |
+| **EUREF** | euref-ip.net:2101 | None* | European reference stations |
+| **IGS** | igs-ip.net:2101 | None* | International GNSS Service |
+| **SNIP Demo** | ntrip.use-snip.com:2101 | None | Demo caster for testing |
+| **AUSCORS** | ntrip.data.gnss.ga.gov.au:443 | Required | Geoscience Australia (HTTPS) |
+
+\* Some streams may require registration
 
 ## Development
 
