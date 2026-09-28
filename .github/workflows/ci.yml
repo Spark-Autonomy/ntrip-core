@@ -70,8 +70,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.75"
+      # Install stable last so that it is the default toolchain.
+      # rust-cache runs cargo metadata with the default toolchain.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-features
+      # Cargo 1.75 cannot read crates that use edition 2024. The stable
+      # resolver picks the newest versions that support rust-version 1.75.
+      - run: cargo +stable generate-lockfile
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+      - run: cargo +1.75 check --all-features
 
   # Code coverage
   coverage:
@@ -85,7 +93,3 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo llvm-cov --all-features --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@v4
-        with:
-          files: lcov.info
-          fail_ci_if_error: false

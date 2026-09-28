@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/ntrip-core.svg)](https://crates.io/crates/ntrip-core)
 [![Documentation](https://docs.rs/ntrip-core/badge.svg)](https://docs.rs/ntrip-core)
-[![CI](https://github.com/greenforge-labs/ntrip-core/workflows/CI/badge.svg)](https://github.com/greenforge-labs/ntrip-core/actions)
+[![CI](https://github.com/Spark-Autonomy/ntrip-core/workflows/CI/badge.svg)](https://github.com/Spark-Autonomy/ntrip-core/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.75-blue.svg)](https://www.rust-lang.org)
 
